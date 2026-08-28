@@ -172,6 +172,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	checkinAutoMu.RLock()
 	auto := checkinAuto
 	checkinAutoMu.RUnlock()
+	sysRedact := systemRedactEnabled()
+	modelsSrc := modelsSourceLabel()
+	modelsCount := len(getConfiguredModels())
 	// Ensure default selection for panel + scheduler (first usable card).
 	activeID := ensureDefaultActiveAuth(out)
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
@@ -184,6 +187,9 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"accounts":       out,
 		"active_auth":    activeID,
 		"checkin_auto":   auto,
+		"system_redact":  sysRedact,
+		"models_source":  modelsSrc,
+		"models_count":   modelsCount,
 		"lifecycle_auto": lifecycleEnabled(),
 		"schedule":       []string{"09:00", "21:00"},
 		"server_time":    time.Now().Format("2006-01-02 15:04:05"),

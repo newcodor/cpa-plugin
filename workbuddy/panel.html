@@ -123,6 +123,24 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
 .modal-ft button.sec{background:var(--btn-sec);color:var(--fg)}
 .modal-ft button.sec:hover{background:var(--btn-sec-hover)}
+/* 模型管理编辑器（与工具栏同区，内联可折叠卡片） */
+.me-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:14px;display:none}
+.me-card.show{display:block}
+.me-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px}
+.me-hd .me-title{font-weight:700;font-size:14px}
+.me-hd .me-meta{color:var(--mut);font-size:12px}
+.me-hint{color:var(--warn);font-size:12px;background:var(--warn-soft);border:1px solid var(--warn-border);border-radius:8px;padding:8px 12px;margin-bottom:10px}
+.me-table{width:100%;border-collapse:collapse;font-size:13px}
+.me-table th{text-align:left;color:var(--mut);font-size:11px;font-weight:600;padding:4px 8px;border-bottom:1px solid var(--border)}
+.me-table td{padding:4px 6px;border-bottom:1px solid var(--border)}
+.me-table input{width:100%;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:5px 8px;color:var(--fg);font-size:13px}
+.me-table input:focus{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring);outline:none}
+.me-table input.me-id{font-family:ui-monospace,monospace;font-size:12px}
+.me-del{background:var(--btn-sec);color:var(--err);border:0;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;white-space:nowrap}
+.me-del:hover{background:var(--err-soft)}
+.me-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.me-actions .me-add{background:var(--surface);border:1px solid var(--border);color:var(--fg)}
+.me-ro .me-table input{opacity:.6;cursor:default}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -186,7 +204,28 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
+    <label class="toggle" title="向 role=system 消息插入零宽空格（U+200B），规避上游对系统提示词的精确匹配扫描。此项由 CPA 插件配置编辑界面的 system_redact 字段控制（唯一生效来源），此处仅显示当前状态，不可点选。"><input type="checkbox" id="redactToggle" disabled style="cursor:default;opacity:.75"> 系统提示词脱敏<span style="color:var(--mut);font-size:11px">（配置只读）</span></label>
+    <button class="sec" id="modelsBtn" onclick="reloadModels(this)" title="从 models 配置文件（WB_MODELS_FILE 或插件目录 workbuddy.yaml）重载模型列表">重载模型</button>
+    <button class="sec" id="modelsEditBtn" onclick="toggleModelsEditor()" title="可视化增删改模型列表并保存到 workbuddy.yaml">模型管理</button>
+    <span class="toggle" id="modelsInfo" title="当前模型列表来源"></span>
     <span class="toggle" id="svtime"></span>
+  </div>
+  <div class="me-card" id="modelsEditor">
+    <div class="me-hd">
+      <span class="me-title">模型列表</span>
+      <span class="me-meta" id="meMeta"></span>
+    </div>
+    <div class="me-hint" id="meHint" style="display:none"></div>
+    <table class="me-table" id="meTable">
+      <thead><tr><th style="width:30%">ID</th><th style="width:30%">名称</th><th style="width:16%">上下文</th><th style="width:16%">最大Tokens</th><th style="width:8%"></th></tr></thead>
+      <tbody id="meBody"></tbody>
+    </table>
+    <div class="me-actions">
+      <button type="button" class="me-add" onclick="meAddRow()">+ 新增模型</button>
+      <button type="button" id="meSave" onclick="meSave(this)">保存并重载</button>
+      <button type="button" class="sec" onclick="toggleModelsEditor()">收起</button>
+      <span class="toggle" id="meStatus"></span>
+    </div>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
@@ -621,6 +660,9 @@ async function load(force, btn){
       ? await api("/refresh", {method:"POST"})
       : await api("/accounts");
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
+    document.getElementById("redactToggle").checked=!!d.system_redact;
+    const ms=document.getElementById("modelsInfo");
+    if(ms){ const src=d.models_source||"default"; ms.textContent="模型: "+src+(typeof d.models_count==="number"?" ("+d.models_count+")":""); }
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
       g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
@@ -840,6 +882,123 @@ async function claimTrialAll(btn){
 }
 async function toggleAuto(on){
   try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
+}
+/* 系统提示词脱敏（system_redact）为只读显示项：由 CPA 插件配置编辑界面的
+   system_redact 字段唯一决定，面板不可点选，故无 toggleRedact()。 */
+async function reloadModels(btn){
+  if(btn) busy(btn,true);
+  try{
+    const d=await api("/models/reload",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+    if(d&&d.ok){
+      const src=d.models_source||"default";
+      const info=document.getElementById("modelsInfo");
+      if(info) info.textContent="模型: "+src+(typeof d.models_loaded==="number"?" ("+d.models_loaded+")":"");
+      toast("模型已重载 ✅ "+src+(typeof d.models_loaded==="number"?" · "+d.models_loaded+" 个":""),"ok");
+    }else{
+      toast("模型重载失败","err",(d&&d.error)||"");
+    }
+  }catch(e){ toast("模型重载失败","err",e.message); }
+  finally{ if(btn) busy(btn,false); }
+}
+/* ---------- 模型管理编辑器（内联可折叠，位于工具栏同区） ---------- */
+let meOpen=false;
+function toggleModelsEditor(){
+  const box=document.getElementById("modelsEditor");
+  meOpen=!meOpen;
+  box.classList.toggle("show",meOpen);
+  if(meOpen) meLoad();
+}
+function meRowHTML(m,i){
+  const id=(m&&m.ID)||(m&&m.id)||"";
+  const name=(m&&m.Name)||(m&&m.name)||"";
+  const ctx=(m&&m.ContextLength)||(m&&m.context)||0;
+  const mt=(m&&m.MaxCompletionTokens)||(m&&m.max_tokens)||0;
+  return '<tr>'
+    +'<td><input class="me-id" data-f="id" value="'+String(id).replace(/"/g,"&quot;")+'" placeholder="模型 ID"></td>'
+    +'<td><input data-f="name" value="'+String(name).replace(/"/g,"&quot;")+'" placeholder="显示名称"></td>'
+    +'<td><input data-f="context" value="'+Number(ctx||0)+'" inputmode="numeric"></td>'
+    +'<td><input data-f="max_tokens" value="'+Number(mt||0)+'" inputmode="numeric"></td>'
+    +'<td><button type="button" class="me-del" onclick="meDelRow(this)">删除</button></td>'
+    +'</tr>';
+}
+function meAddRow(){
+  const tb=document.getElementById("meBody");
+  tb.insertAdjacentHTML("beforeend",meRowHTML({ID:"",Name:"",ContextLength:0,MaxCompletionTokens:0},0));
+  const rows=tb.querySelectorAll("tr");
+  const last=rows[rows.length-1];
+  if(last) { last.querySelector("input").focus(); }
+}
+function meDelRow(btn){
+  const tr=btn.closest("tr");
+  if(tr) tr.remove();
+}
+async function meLoad(){
+  const body=document.getElementById("meBody");
+  const meta=document.getElementById("meMeta");
+  const hint=document.getElementById("meHint");
+  const table=document.getElementById("meTable");
+  const saveBtn=document.getElementById("meSave");
+  try{
+    const d=await api("/models");
+    const models=d.models||[];
+    const editable=!!d.editable;
+    if(meta) meta.textContent="来源 "+(d.source||"default")+" · 共 "+models.length+" 个";
+    // config_yaml 来源时只读：提示去 CPA 配置里改
+    if(!editable){
+      if(hint){hint.style.display="block";hint.textContent="当前模型列表来自 config_yaml（优先级最高，重启后覆盖文件配置）。如需用面板编辑，请在 CPA 配置里删除 models: 块，或直接在 config_yaml 中修改。";}
+      if(table) table.classList.add("me-ro");
+      if(saveBtn) saveBtn.disabled=true;
+      const addBtn=table&&table.parentElement?table.parentElement.querySelector(".me-add"):null;
+      if(addBtn) addBtn.disabled=true;
+      body.querySelectorAll("input").forEach(i=>i.setAttribute("readonly","readonly"));
+      body.querySelectorAll(".me-del").forEach(b=>b.disabled=true);
+    }else{
+      if(hint) hint.style.display="none";
+      if(table) table.classList.remove("me-ro");
+      if(saveBtn) saveBtn.disabled=false;
+      const addBtn=table&&table.parentElement?table.parentElement.querySelector(".me-add"):null;
+      if(addBtn) addBtn.disabled=false;
+    }
+    body.innerHTML=models.map(meRowHTML).join("");
+    if(!editable){
+      body.querySelectorAll("input").forEach(i=>i.setAttribute("readonly","readonly"));
+      body.querySelectorAll(".me-del").forEach(b=>b.disabled=true);
+    }
+  }catch(e){
+    if(meta) meta.textContent="加载失败";
+    toast("模型列表加载失败","err",e.message);
+  }
+}
+function meCollect(){
+  const rows=document.getElementById("meBody").querySelectorAll("tr");
+  const out=[];
+  rows.forEach(tr=>{
+    const g=f=>{const el=tr.querySelector('[data-f="'+f+'"]');return el?el.value.trim():"";};
+    const id=g("id");
+    if(!id) return;
+    const numParse=v=>{const n=parseInt(v,10);return Number.isFinite(n)&&n>=0?n:0;};
+    out.push({id:id,name:g("name")||id,context:numParse(g("context")),max_tokens:numParse(g("max_tokens"))});
+  });
+  return out;
+}
+async function meSave(btn){
+  const models=meCollect();
+  const status=document.getElementById("meStatus");
+  if(!models.length){toast("至少保留一个模型","warn");return;}
+  if(btn) busy(btn,true);
+  try{
+    const d=await api("/models/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({models:models})});
+    if(d&&d.ok){
+      toast("模型已保存 ✅ 共 "+d.models_saved+" 个 · "+(d.models_source||""),"ok");
+      if(status) status.textContent="已保存 → "+(d.models_path||"");
+      const info=document.getElementById("modelsInfo");
+      if(info) info.textContent="模型: "+(d.models_source||"workbuddy.yaml")+" ("+d.models_saved+")";
+    }else{
+      toast("保存失败","err",(d&&d.error)||"");
+      if(status) status.textContent=(d&&d.error)||"保存失败";
+    }
+  }catch(e){ toast("保存失败","err",e.message); }
+  finally{ if(btn) busy(btn,false); }
 }
 function openImportModal(){
   const m=document.getElementById("importModal");

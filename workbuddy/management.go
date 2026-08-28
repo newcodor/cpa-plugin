@@ -147,6 +147,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
+			{Method: http.MethodPost, Path: base + "/models/reload", Description: "Reload the model list from workbuddy.yaml in the CPA plugins directory (or env WB_MODELS_FILE; YAML or JSON). Send {clear:true} to drop the override and use built-in defaults."},
+		{Method: http.MethodGet, Path: base + "/models", Description: "Get the current model list for the panel editor (id, name, context, max_tokens) with its source and editable flag."},
+		{Method: http.MethodPost, Path: base + "/models/save", Description: "Save an edited model list back to workbuddy.yaml in the CPA plugins directory and reload. Read-only when models come from config_yaml."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy credential JSON (nested or flat) into host auth store."},
 			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one Global account (auth_index). One-time 250 credits / 14 days."},
@@ -199,6 +202,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckin(req)))
 	case req.Method == http.MethodPost && path == base+"/checkin/config":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req)))
+	case req.Method == http.MethodPost && path == base+"/models/reload":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelsReload(req)))
+	case req.Method == http.MethodGet && path == base+"/models":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelsGet(req)))
+	case req.Method == http.MethodPost && path == base+"/models/save":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelsSave(req)))
 	case req.Method == http.MethodGet && path == base+"/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
@@ -332,7 +341,9 @@ func mutatingManagementPath(path string) bool {
 		base + "/import",
 		base + "/trial",
 		base + "/select",
-		base + "/keepalive":
+		base + "/keepalive",
+		base + "/models/reload",
+		base + "/models/save":
 		return true
 	}
 	return false

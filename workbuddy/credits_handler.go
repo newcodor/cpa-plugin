@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +95,139 @@ func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 	checkinAutoMu.Unlock()
 	return map[string]any{"checkin_auto": cur, "persistent": false}
 }
+
+// handleModelsReload re-reads the external models file (WB_MODELS_FILE, or
+// <plugin dir>/workbuddy.yaml) in YAML or JSON form and installs it as the
+// configured model list at runtime, then drops the dynamic upstream-models
+// cache so the next model query sees the fresh list. The models file is a
+// YAML `models:` block / bare block sequence, or a JSON array, of objects
+// with {id,name?,context?,max_tokens?,enabled?,reasoning?}. On any read
+// error the existing list is left unchanged. Persistence: none — the loaded
+// list lives only in memory and is cleared (back to config_yaml/default) on
+// CPA restart, consistent with the other runtime toggles.
+func handleModelsReload(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		// Clear bool `json:"clear"` — when true, drop the configured list and
+		// fall back to defaults without reading a file.
+		Clear *bool `json:"clear"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	if body.Clear != nil && *body.Clear {
+		setConfiguredModels(nil, "")
+		clearDynamicModelsCache()
+		return map[string]any{
+			"ok":            true,
+			"action":        "cleared",
+			"models_source": "default",
+			"persistent":    false,
+		}
+	}
+	n, path, err := loadModelsFromFile()
+	if err != nil {
+		return map[string]any{
+			"ok":            false,
+			"error":         err.Error(),
+			"models_source": modelsSourceLabel(),
+			"persistent":    false,
+		}
+	}
+	// Drop the dynamic upstream cache so the next model.for_auth / static call
+	// re-derives from the freshly configured list (or falls back to it).
+	clearDynamicModelsCache()
+	return map[string]any{
+		"ok":            true,
+		"action":        "loaded",
+		"models_loaded": n,
+		"models_source": filepath.Base(path),
+		"models_path":   path,
+		"persistent":    false,
+	}
+}
+
+// handleModelsGet returns the current model list for the panel editor. The
+// list is whatever wbModels() would serve right now (configured > default).
+// editable=false means the source is config_yaml — the panel shows a read-only
+// hint instead of the table, because config_yaml wins on restart.
+func handleModelsGet(req pluginapi.ManagementRequest) map[string]any {
+	models := wbModels()
+	editable := modelsEditable()
+	source := modelsSourceLabel()
+	return map[string]any{
+		"models":   models,
+		"source":   source,
+		"editable": editable,
+		"count":    len(models),
+	}
+}
+
+// handleModelsSave accepts an edited model list, writes it to workbuddy.yaml in
+// the CPA plugins directory, then installs + reloads it. Refuses an empty
+// list. When the source is config_yaml the endpoint returns an error so the
+// panel can tell the user to edit config_yaml instead.
+func handleModelsSave(req pluginapi.ManagementRequest) map[string]any {
+	if !modelsEditable() {
+		return map[string]any{
+			"ok":     false,
+			"error":  "模型列表来自 config_yaml（优先级最高），请在 CPA 配置里修改 models: 块，不要用面板编辑",
+			"source": modelsSourceLabel(),
+		}
+	}
+	var body struct {
+		Models []struct {
+			ID                  string `json:"id"`
+			Name                string `json:"name"`
+			ContextLength       int64  `json:"context"`
+			MaxCompletionTokens int64  `json:"max_tokens"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return map[string]any{"ok": false, "error": "解析请求失败: " + err.Error()}
+	}
+	if len(body.Models) == 0 {
+		return map[string]any{"ok": false, "error": "模型列表不能为空"}
+	}
+	// Validate ids (required, non-empty, no duplicates).
+	seen := make(map[string]bool)
+	for i, m := range body.Models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			return map[string]any{"ok": false, "error": "第 " + intToStr(i+1) + " 个模型缺少 id"}
+		}
+		if seen[strings.ToLower(id)] {
+			return map[string]any{"ok": false, "error": "模型 id 重复: " + id}
+		}
+		seen[strings.ToLower(id)] = true
+	}
+	infos := make([]pluginapi.ModelInfo, 0, len(body.Models))
+	for _, m := range body.Models {
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			name = strings.TrimSpace(m.ID)
+		}
+		infos = append(infos, pluginapi.ModelInfo{
+			ID:                         strings.TrimSpace(m.ID),
+			Name:                       name,
+			ContextLength:              m.ContextLength,
+			MaxCompletionTokens:        m.MaxCompletionTokens,
+			OwnedBy:                    providerName,
+			SupportedGenerationMethods: []string{"chat"},
+		})
+	}
+	path, n, err := saveModelsToFile(infos)
+	if err != nil {
+		return map[string]any{"ok": false, "error": "保存失败: " + err.Error()}
+	}
+	return map[string]any{
+		"ok":            true,
+		"models_saved":  n,
+		"models_source": filepath.Base(path),
+		"models_path":   path,
+		"persistent":    true,
+	}
+}
+
+// intToStr is a small helper to avoid importing strconv just for one use.
+func intToStr(n int) string { return strconv.Itoa(n) }
 
 // handleClaimTrial claims the expert trial pack for one Global account.
 // CN accounts are rejected — the trial endpoint is Global-only.

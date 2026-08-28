@@ -42,6 +42,13 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 4. ensureSystemMessage: inject minimal system msg for Global only.
 	ensureSystemMessageInPlace(obj, sa)
 
+	// 4b. system_redact: obfuscate ALL role=system content (including any message
+	// injected by ensureSystemMessage) via U+200B before forwarding. Toggle-gated;
+	// no-op when off. Runs last among system steps so the final phrasing is masked.
+	if systemRedactEnabled() {
+		redactSystemMessagesInPlace(obj)
+	}
+
 	// 5. rewriteModel: swap client model name to upstream model id.
 	rewriteModelInPlace(obj, upstreamModel)
 

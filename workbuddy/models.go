@@ -16,7 +16,22 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+// wbModels returns the plugin's model list. When models are supplied via
+// config_yaml (or the runtime /models/reload file) those are used; otherwise
+// the built-in default list is returned as a fallback so the plugin always
+// advertises a usable set out of the box. The caller must not mutate the
+// returned slice (it may be the shared default slice).
 func wbModels() []pluginapi.ModelInfo {
+	if configured := getConfiguredModels(); len(configured) > 0 {
+		return configured
+	}
+	return defaultModels()
+}
+
+// defaultModels is the built-in hardcoded list, used when config_yaml /
+// models file provide no models. Kept as a separate function so tests and
+// future code can reference it directly.
+func defaultModels() []pluginapi.ModelInfo {
 	return []pluginapi.ModelInfo{
 		{ID: "glm-5.2", Name: "GLM-5.2", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "glm-5.1", Name: "GLM-5.1", ContextLength: 131072, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -44,6 +59,16 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Lock()
 	dynamicModelsCache.models = models
 	dynamicModelsCache.fetched = time.Now()
+	dynamicModelsCache.Unlock()
+}
+
+// clearDynamicModelsCache drops the cached upstream model list so the next
+// model.for_auth / static call re-derives from the (possibly just-reloaded)
+// configured list or re-fetches upstream. Used by /models/reload.
+func clearDynamicModelsCache() {
+	dynamicModelsCache.Lock()
+	dynamicModelsCache.models = nil
+	dynamicModelsCache.fetched = time.Time{}
 	dynamicModelsCache.Unlock()
 }
 

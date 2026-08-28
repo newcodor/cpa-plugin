@@ -21,6 +21,11 @@ var (
 	checkinAuto   = true // enabled by default
 	checkinAutoMu sync.RWMutex
 
+	// systemRedact injects U+200B into role=system message content before the
+	// request is forwarded upstream (default false — off, preserves exact prompt).
+	systemRedact   = false
+	systemRedactMu sync.RWMutex
+
 	// usageReportURL / usageReportKey: POST NDJSON to CPA-Manager-Plus
 	// /v0/management/usage/import (only path that reaches request monitoring;
 	// c-shared plugins cannot use host usage.DefaultManager/redisqueue).
@@ -61,14 +66,24 @@ func configure(raw []byte) {
 	nextLifecycleAuto := true
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
 	nextKeepaliveAuto := true
+	nextSystemRedact := false
 	nextMgmtKey := ""
+
+	// Captured for the models: block parser (parsed after the line scan).
+	var configYAMLBytes []byte
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
 		var req struct {
+			// []byte is correct and must stay []byte: encoding/json decodes a
+			// []byte field from a base64-encoded JSON string, and the host sends
+			// config_yaml base64-encoded. (Using string here would feed raw
+			// base64 text to the YAML line scanner and silently break every
+			// config_yaml setting.)
 			ConfigYAML []byte `json:"config_yaml"`
 		}
 		if err := json.Unmarshal(raw, &req); err == nil {
+			configYAMLBytes = req.ConfigYAML
 			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "checkin_auto:") {
@@ -104,6 +119,11 @@ func configure(raw []byte) {
 					v = strings.Trim(v, "\"'")
 					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
+				if strings.HasPrefix(line, "system_redact:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "system_redact:"))
+					v = strings.Trim(v, "\"'")
+					nextSystemRedact = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 			}
 		}
 	}
@@ -125,6 +145,10 @@ func configure(raw []byte) {
 	keepaliveAuto = nextKeepaliveAuto
 	keepaliveAutoMu.Unlock()
 
+	systemRedactMu.Lock()
+	systemRedact = nextSystemRedact
+	systemRedactMu.Unlock()
+
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).
 	if nextMgmtKey == "" {
@@ -134,8 +158,54 @@ func configure(raw []byte) {
 	managementAPIKey = nextMgmtKey
 	managementAPIKeyMu.Unlock()
 
+	// Models: resolve in priority order (see loadModelsConfig).
+	loadModelsConfig(configYAMLBytes)
+
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
+}
+
+// loadModelsConfig resolves the model list in priority order:
+//  1. config_yaml `models:` block — authoritative config, wins on restart
+//  2. workbuddy.yaml in the CPA plugins directory — auto-loaded at startup so
+//     a CPA restart picks up the file without requiring a manual reload
+//  3. built-in default list — wbModels() falls back when nothing is set
+//
+// Errors from the file are non-fatal: the list stays cleared and wbModels()
+// serves built-in defaults. A config_yaml block that yields nothing usable
+// also falls through to defaults rather than erroring registration.
+func loadModelsConfig(configYAMLBytes []byte) {
+	if configured := parseModelsConfigYAML(configYAMLBytes); len(configured) > 0 {
+		setConfiguredModels(configured, "config_yaml")
+		return
+	}
+	if len(configYAMLBytes) > 0 && strings.Contains(string(configYAMLBytes), "models:") {
+		// User declared a models: block but it produced nothing usable — clear
+		// any previously loaded override so defaults are used (don't silently
+		// keep a stale list that contradicts the current config).
+		setConfiguredModels(nil, "")
+		return
+	}
+	// No config_yaml models: block — auto-load workbuddy.yaml from the CPA
+	// plugins directory (or env WB_MODELS_FILE). Ignore errors: a missing or
+	// unparsable file simply leaves the list cleared → built-in defaults.
+	if _, _, err := loadModelsFromFile(); err != nil {
+		setConfiguredModels(nil, "")
+	}
+}
+
+// systemRedactEnabled reports whether system-prompt obfuscation is enabled.
+//
+// The value comes ONLY from config_yaml (`system_redact: true/false` in the CPA
+// plugin-config editor) — that is the single source of truth and the only place
+// it can be persisted. There is deliberately no runtime setter: a panel-side
+// toggle could not write back to config_yaml, so it would either be silently
+// discarded or clobbered by the next reconfigure, which is exactly the
+// misleading behavior we are removing. The panel shows this value read-only.
+func systemRedactEnabled() bool {
+	systemRedactMu.RLock()
+	defer systemRedactMu.RUnlock()
+	return systemRedact
 }
 
 // resolveUsageReport fills usageReportURL/key from config → env → secret files.
