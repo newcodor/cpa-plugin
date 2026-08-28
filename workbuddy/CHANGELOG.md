@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.6
+
+### 模型列表可配置 + 面板可视化编辑
+
+- `models_config.go` (new) — 模型列表由硬编码改为可配置。加载优先级：
+  `config_yaml` 的 `models:` 块 > CPA plugins 目录下的 `workbuddy.yaml` >
+  内置默认 10 模型。支持 YAML（`models:` 块 / 裸块序列）与 JSON 两种格式。
+- `models.go` — `wbModels()` 改为优先返回已配置列表，为空时回退内置默认
+  （原硬编码列表移入 `defaultModels()`）。
+- 插件启动 / 重新配置时自动加载 `workbuddy.yaml`，无需手动重载
+  （`loadModelsConfig()`，`configure()` 调用）。
+- `usage_config.go` — 修复 config_yaml 解码契约说明：`ConfigYAML` 必须为
+  `[]byte`（宿主以 base64 传输），改为 `string` 会导致所有配置静默失效。
+- 新增管理端点：`GET /models`（当前列表 + 来源 + 可编辑标志）、
+  `POST /models/save`（保存回 `workbuddy.yaml` 并重载）、
+  `POST /models/reload`（从文件重载 / `{clear:true}` 回退默认）。
+- `panel.html` — 工具栏新增「模型管理」内联可编辑表格，支持增删改 +
+  保存并重载；「重载模型」按钮。来源为 `config_yaml` 时表格只读并提示。
+
+### 系统提示词脱敏改为配置驱动（只读显示）
+
+- `system_redact` 移除运行时开关：插件无法回写宿主 `config.yaml`，面板点选
+  只改内存、会在下次 reconfigure 被冲掉，属于误导行为。现由 CPA 插件配置
+  编辑界面的 `system_redact` 字段唯一决定，面板仅显示状态、不可点选。
+- 删除 `setSystemRedact()`、`handleSystemRedactConfig()` 及
+  `POST /system-redact/config` 路由。
+
+### Bug fixes
+
+- `management.go` — 补齐 `/system-redact/config` 路由注册（该端点现已在
+  0.8.6 中移除；此前因只加了 switch case 未注册，宿主直接返回 404）。
+- `management_routes_test.go` (new) — 双向校验路由注册与分发一致，防止
+  「实现了但未注册」或「注册了但未实现」。
+
 ## 0.8.2
 
 ### Concurrency + lifecycle hardening
