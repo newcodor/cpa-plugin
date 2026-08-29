@@ -60,12 +60,15 @@ import "C"
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -566,11 +569,55 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 		req.Header.Set("X-No-Department-Info", "1")
 	}
 	req.Header.Set("X-Product", "SaaS")
+	// Client-identifying headers. Tencent's billing/usage backend uses these to
+	// populate the "client" (客户端) field; without them requests show as empty.
+	// X-IDE-Type/Name/Version mirror clientUA so the UA and headers agree.
+	req.Header.Set("X-IDE-Type", "CLI")
+	req.Header.Set("X-IDE-Name", "CLI")
+	req.Header.Set("X-IDE-Version", "2.63.2")
+	req.Header.Set("X-Agent-Intent", "craft")
+	req.Header.Set("X-Request-ID", randomHex(16))
+	req.Header.Set("X-Conversation-ID", randomHex(16))
+	req.Header.Set("X-Conversation-Request-ID", randomHex(16))
+	req.Header.Set("X-Conversation-Message-ID", randomHex(16))
 	// Override Origin/Referer for Global accounts so the upstream doesn't
 	// reject the request as cross-origin.
 	origin := originRefererFor(sa)
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
+}
+
+// randomHex returns n random bytes hex-encoded. CodeBuddy conversation/request
+// IDs are 32-char hex strings; this keeps them UUID-free but stable enough.
+// The fallback must still emit exactly n*2 hex chars (upstream v0.8.6 formatted
+// a timestamp, producing a 15-char value that broke the 32-char contract).
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return fallbackHex(n)
+	}
+	return hex.EncodeToString(b)
+}
+
+// fallbackHex is the deterministic last resort when crypto/rand is unavailable.
+// It must still honour two contracts: exactly 2n hex chars, and no repeats
+// across calls within the same nanosecond. Upstream v0.8.6 formatted a
+// timestamp here and returned a 15-char value; upstream v0.8.7 "fixed" it with
+// fmt.Sprintf("%0*x", n*2, ...) — but a printf width is a MINIMUM, so that
+// still overflows for small n (n=1 yields 16 chars, not 2). Mixing a monotonic
+// counter into exactly n bytes satisfies both.
+var fallbackCounter uint64
+
+func fallbackHex(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	counter := atomic.AddUint64(&fallbackCounter, 1)
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = byte(time.Now().UnixNano()>>uint((i%8)*8)) ^ byte(counter>>uint((i%8)*8)) ^ byte(i*31)
+	}
+	return hex.EncodeToString(b)
 }
 
 // -----------------------------------------------------------------------------
