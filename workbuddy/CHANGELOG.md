@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.7
+
+### 请求携带客户端标识头
+
+- `main.go` — `backendHeaders()` 在 chat 请求上补齐客户端标识头，修复
+  Tencent 计费/用量后端「客户端」(客户端) 字段显示为空的问题：
+  `X-IDE-Type` / `X-IDE-Name` / `X-IDE-Version`（取值与 `clientUA` 对齐，
+  均为 `CLI` / `CLI` / `2.63.2`）、`X-Agent-Intent: craft`，以及四个每次
+  请求随机生成的 ID：`X-Request-ID` / `X-Conversation-ID` /
+  `X-Conversation-Request-ID` / `X-Conversation-Message-ID`（各 16 字节
+  → 32 位小写 hex）。
+- `main.go` — 新增 `randomHex(n)`（基于 `crypto/rand`）与 `fallbackHex(n)`。
+  `crypto/rand` 不可用时，fallback 必须**恰好**产出 `n*2` 个 hex 字符：上游
+  0.8.6 用 `fmt.Sprintf("%0*x", n*2, ...)` 实现，但 printf 宽度是最小值而非
+  精确值，`n=1` 时会吐出 16 个字符。现改为 hex 编码恰好 n 个字节，并混入
+  `atomic.AddUint64` 计数器，避免同一请求内 4 次调用落在同一纳秒而撞号。
+- `backend_headers_test.go` (new) — 5 项测试：四个常量头正确、四个 ID 头匹配
+  `^[0-9a-f]{32}$`、单请求内不重复、跨请求不复用、`X-IDE-*` 与 `clientUA`
+  一致，以及 `randomHex` / `fallbackHex` 的长度与小写 hex 校验。
+
 ## 0.8.6
 
 ### 模型列表可配置 + 面板可视化编辑

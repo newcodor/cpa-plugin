@@ -332,7 +332,7 @@ type registrationCapability struct {
 // version is injected at build time via -ldflags "-X main.version=...".
 // Keep the source default in sync with VERSION / registry.json so a plain
 // `go build` (no ldflags) still reports the right version.
-var version = "0.8.6"
+var version = "0.8.7"
 
 func wbRegistration() registration {
 	return registration{
